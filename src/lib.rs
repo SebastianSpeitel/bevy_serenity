@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 use bevy_ecs::prelude::*;
 use bevy_tasks::IoTaskPool;
+use log::{debug, trace};
 use serenity::{client::ClientBuilder, prelude::*};
 
 pub type RawEvent = (serenity::model::event::Event, Context);
@@ -28,11 +29,13 @@ struct RawHandler(SyncSender<RawEvent>);
 #[serenity::async_trait]
 impl RawEventHandler for RawHandler {
     async fn raw_event(&self, ctx: Context, ev: serenity::model::event::Event) {
+        trace!("Received raw event: {:?}", ev);
         self.0.send((ev, ctx)).unwrap();
     }
 }
 
 fn start_client(mut client: Client, status_sender: SyncSender<Status>) {
+    debug!("Starting client");
     let pool = IoTaskPool::get();
     pool.spawn(async move {
         use async_compat::Compat;
@@ -41,9 +44,11 @@ fn start_client(mut client: Client, status_sender: SyncSender<Status>) {
         let res = Compat::new(client.start()).await;
         match res {
             Err(e) => {
+                debug!("Client disconnected: {:?}", e);
                 status_sender.send(Disconnected(e)).unwrap();
             }
             Ok(_) => {
+                debug!("Client stopped");
                 status_sender.send(Stopped).unwrap();
             }
         }
@@ -64,7 +69,6 @@ fn status_handler(receiver: Res<StatusReceiver>, sender: Res<StatusSender>) {
     for status in receiver.try_iter() {
         match status {
             Connected(c) => {
-                println!("Connected!");
                 start_client(c, sender.0.clone());
             }
             ConnectFailure(e) => panic!("Failed to connect: {:?}", e),
@@ -102,9 +106,11 @@ impl SerenityPlugin {
 
             match Compat::new(client).await {
                 Ok(client) => {
+                    debug!("Client connected");
                     sender.send(Status::Connected(client)).unwrap();
                 }
                 Err(err) => {
+                    debug!("Client failed to connect: {:?}", err);
                     sender.send(Status::ConnectFailure(err)).unwrap();
                 }
             }
