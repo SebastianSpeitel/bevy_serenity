@@ -9,9 +9,9 @@ pub type RawEvent = (serenity::model::event::Event, Context);
 
 enum Status {
     Connected(Client),
-    Disconnect(SerenityError),
+    Disconnected(SerenityError),
     ConnectFailure(SerenityError),
-    Shutdown,
+    Stopped,
 }
 
 #[derive(Resource)]
@@ -41,10 +41,10 @@ fn start_client(mut client: Client, status_sender: SyncSender<Status>) {
         let res = Compat::new(client.start()).await;
         match res {
             Err(e) => {
-                status_sender.send(Disconnect(e)).unwrap();
+                status_sender.send(Disconnected(e)).unwrap();
             }
             Ok(_) => {
-                status_sender.send(Shutdown).unwrap();
+                status_sender.send(Stopped).unwrap();
             }
         }
     })
@@ -68,8 +68,8 @@ fn status_handler(receiver: Res<StatusReceiver>, sender: Res<StatusSender>) {
                 start_client(c, sender.0.clone());
             }
             ConnectFailure(e) => panic!("Failed to connect: {:?}", e),
-            Shutdown => panic!("Shutdown"),
-            Disconnect(e) => panic!("Disconnect: {:?}", e),
+            Stopped => panic!("Shutdown"),
+            Disconnected(e) => panic!("Disconnect: {:?}", e),
         }
     }
 }
