@@ -1,0 +1,16 @@
+[package]
+name = "bevy_serenity"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy_app = "0.9"
+bevy_ecs = "0.9"
+bevy_tasks = "0.9"
+thiserror = "1.0"
+async-compat = "0.2.1"
+
+[dependencies.serenity]
+version = "0.11"
+default-features = false
+features = ["client", "collector", "rustls_backend"]
