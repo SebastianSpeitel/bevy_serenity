@@ -14,4 +14,4 @@ log = "*"
 [dependencies.serenity]
 version = "0.11"
 default-features = false
-features = ["client", "collector", "rustls_backend"]
+features = ["client", "gateway", "model", "rustls_backend"]
