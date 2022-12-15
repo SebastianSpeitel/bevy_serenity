@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use bevy_ecs::prelude::*;
 use bevy_tasks::IoTaskPool;
 use log::{debug, trace};
+pub use serenity;
 use serenity::{client::ClientBuilder, prelude::*};
 
 pub type RawEvent = (serenity::model::event::Event, Context);
