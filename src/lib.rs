@@ -126,9 +126,12 @@ impl SerenityPlugin {
         })
         .detach();
 
+        let temp_http = serenity::http::Http::new(&self.token);
+
         world.insert_resource(StatusSender(status_sender));
         world.insert_resource(StatusReceiver(status_receiver.into()));
         world.insert_resource(EventReceiver(Mutex::new(ev_receiver)));
+        world.insert_resource(Http(Arc::new(temp_http)));
     }
 }
 
