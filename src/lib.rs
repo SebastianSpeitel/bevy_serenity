@@ -1,5 +1,5 @@
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use bevy_ecs::prelude::*;
 use bevy_tasks::IoTaskPool;
@@ -15,6 +15,9 @@ enum Status {
     ConnectFailure(SerenityError),
     Stopped,
 }
+
+#[derive(Resource)]
+pub struct Http(Arc<serenity::http::Http>);
 
 #[derive(Resource)]
 struct EventReceiver(Mutex<Receiver<RawEvent>>);
@@ -57,9 +60,14 @@ fn start_client(mut client: Client, status_sender: SyncSender<Status>) {
     .detach();
 }
 
-fn event_handler(receiver: Res<EventReceiver>, mut writer: EventWriter<RawEvent>) {
+fn event_handler(
+    receiver: Res<EventReceiver>,
+    mut writer: EventWriter<RawEvent>,
+    mut commands: Commands,
+) {
     let receiver = receiver.0.lock().unwrap();
     for ev in receiver.try_iter() {
+        commands.insert_resource(Http(Arc::clone(&ev.1.http)));
         writer.send(ev);
     }
 }
