@@ -17,7 +17,7 @@ enum Status {
 }
 
 #[derive(Resource)]
-pub struct Http(Arc<serenity::http::Http>);
+pub struct Http(pub Arc<serenity::http::Http>);
 
 #[derive(Resource)]
 struct EventReceiver(Mutex<Receiver<RawEvent>>);
