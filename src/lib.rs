@@ -17,7 +17,7 @@ struct Starting(OnceLock<StartingFut>);
 unsafe impl Send for Starting {}
 unsafe impl Sync for Starting {}
 
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct SerenityConfig {
     pub token: String,
     pub intents: GatewayIntents,
@@ -26,12 +26,9 @@ pub struct SerenityConfig {
 #[derive(Component)]
 pub struct SerenityClient(serenity::Client);
 
-#[derive(Resource, Component)]
-pub struct Http(pub Arc<serenity::http::Http>);
-
 type RawEvent = (serenity::all::Event, Context);
 
-#[derive(Event)]
+#[derive(Event, Debug)]
 pub struct SerenityEvent {
     pub entity: Entity,
     pub event: serenity::all::Event,
@@ -61,7 +58,7 @@ async fn start_client(
     config: SerenityConfig,
     sender: Sender<RawEvent>,
 ) -> serenity::Result<serenity::Client> {
-    let client = ClientBuilder::new(&config.token, config.intents)
+    let client = ClientBuilder::new(config.token, config.intents)
         .raw_event_handler(SenderHandler(sender))
         .await?;
     Ok(client)
@@ -69,6 +66,7 @@ async fn start_client(
 
 fn start(mut commands: Commands, clients: Query<(Entity, &SerenityConfig), Added<SerenityConfig>>) {
     for (client, config) in &clients {
+        log::info!("Starting client");
         let (sender, receiver) = channel();
         let fut = start_client(config.to_owned(), sender);
         let boxed_fut: Pin<Box<dyn std::future::Future<Output = _>>> = Box::pin(fut);
@@ -96,9 +94,8 @@ fn poll_starting(mut commands: Commands, mut clients: Query<(Entity, &mut Starti
                 continue;
             }
         };
-        commands
-            .entity(client)
-            .insert((Http(c.http.clone()), SerenityClient(c)));
+        log::info!("Client started");
+        commands.entity(client).insert(SerenityClient(c));
     }
 }
 
@@ -109,6 +106,7 @@ fn write_events(
     for (entity, receiver) in &mut receivers.iter() {
         let receiver = receiver.0.lock().unwrap();
         for (event, context) in receiver.try_iter() {
+            log::trace!("Received event: {:?}", event);
             let ev = SerenityEvent {
                 entity,
                 event,
