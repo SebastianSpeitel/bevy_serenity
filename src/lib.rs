@@ -1,171 +1,129 @@
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::pin::Pin;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use async_compat::Compat;
 use bevy_ecs::prelude::*;
-use bevy_tasks::IoTaskPool;
-use log::{debug, trace};
+use futures_lite::future;
 pub use serenity;
 use serenity::{client::ClientBuilder, prelude::*};
 
-pub type RawEvent = (serenity::model::event::Event, Context);
+type StartingFut =
+    Compat<Pin<Box<dyn std::future::Future<Output = serenity::Result<serenity::Client>>>>>;
 
-enum Status {
-    Connected(Client),
-    Disconnected(SerenityError),
-    ConnectFailure(SerenityError),
-    Stopped,
-}
+#[derive(Component)]
+struct Starting(OnceLock<StartingFut>);
 
-#[derive(Resource)]
-pub struct Http(pub Arc<serenity::http::Http>);
+unsafe impl Send for Starting {}
+unsafe impl Sync for Starting {}
 
-#[derive(Resource)]
-struct EventReceiver(Mutex<Receiver<RawEvent>>);
-
-#[derive(Resource)]
-struct StatusReceiver(Mutex<Receiver<Status>>);
-
-#[derive(Resource)]
-struct StatusSender(SyncSender<Status>);
-
-struct RawHandler(SyncSender<RawEvent>);
-
-#[serenity::async_trait]
-impl RawEventHandler for RawHandler {
-    async fn raw_event(&self, ctx: Context, ev: serenity::model::event::Event) {
-        trace!("Received raw event: {:?}", ev);
-        self.0.send((ev, ctx)).unwrap();
-    }
-}
-
-fn start_client(mut client: Client, status_sender: SyncSender<Status>) {
-    debug!("Starting client");
-    let pool = IoTaskPool::get();
-    pool.spawn(async move {
-        use async_compat::Compat;
-        use Status::*;
-
-        let res = Compat::new(client.start()).await;
-        match res {
-            Err(e) => {
-                debug!("Client disconnected: {:?}", e);
-                status_sender.send(Disconnected(e)).unwrap();
-            }
-            Ok(_) => {
-                debug!("Client stopped");
-                status_sender.send(Stopped).unwrap();
-            }
-        }
-    })
-    .detach();
-}
-
-fn event_handler(
-    receiver: Res<EventReceiver>,
-    mut writer: EventWriter<RawEvent>,
-    mut commands: Commands,
-) {
-    let receiver = receiver.0.lock().unwrap();
-    for ev in receiver.try_iter() {
-        commands.insert_resource(Http(Arc::clone(&ev.1.http)));
-        writer.send(ev);
-    }
-}
-
-fn status_handler(receiver: Res<StatusReceiver>, sender: Res<StatusSender>) {
-    use Status::*;
-    let receiver = receiver.0.lock().unwrap();
-    for status in receiver.try_iter() {
-        match status {
-            Connected(c) => {
-                start_client(c, sender.0.clone());
-            }
-            ConnectFailure(e) => panic!("Failed to connect: {:?}", e),
-            Stopped => panic!("Shutdown"),
-            Disconnected(e) => panic!("Disconnect: {:?}", e),
-        }
-    }
-}
-
-pub struct SerenityPlugin {
+#[derive(Component, Clone)]
+pub struct SerenityConfig {
     pub token: String,
     pub intents: GatewayIntents,
 }
 
-impl SerenityPlugin {
-    pub fn new(token: impl Into<String>, intents: GatewayIntents) -> Self {
-        Self {
-            token: token.into(),
-            intents,
-        }
-    }
+#[derive(Component)]
+pub struct SerenityClient(serenity::Client);
 
-    fn init_resources(&self, world: &mut bevy_ecs::world::World) {
-        let pool = IoTaskPool::init(Default::default);
+#[derive(Resource, Component)]
+pub struct Http(pub Arc<serenity::http::Http>);
 
-        let (ev_sender, ev_receiver) = sync_channel(32);
-        let (status_sender, status_receiver) = sync_channel(32);
+type RawEvent = (serenity::all::Event, Context);
 
-        let client =
-            ClientBuilder::new(&self.token, self.intents).raw_event_handler(RawHandler(ev_sender));
+#[derive(Event)]
+pub struct SerenityEvent {
+    pub entity: Entity,
+    pub event: serenity::all::Event,
+    pub context: Context,
+}
 
-        let sender = status_sender.clone();
-        pool.spawn(async move {
-            use async_compat::Compat;
+struct SenderHandler(Sender<RawEvent>);
 
-            match Compat::new(client).await {
-                Ok(client) => {
-                    debug!("Client connected");
-                    sender.send(Status::Connected(client)).unwrap();
-                }
-                Err(err) => {
-                    debug!("Client failed to connect: {:?}", err);
-                    sender.send(Status::ConnectFailure(err)).unwrap();
-                }
-            }
-        })
-        .detach();
-
-        let temp_http = serenity::http::Http::new(&self.token);
-
-        world.insert_resource(StatusSender(status_sender));
-        world.insert_resource(StatusReceiver(status_receiver.into()));
-        world.insert_resource(EventReceiver(Mutex::new(ev_receiver)));
-        world.insert_resource(Http(Arc::new(temp_http)));
+#[serenity::async_trait]
+impl RawEventHandler for SenderHandler {
+    async fn raw_event(&self, ctx: Context, ev: serenity::all::Event) {
+        log::trace!("Received raw event: {:?}", ev);
+        self.0.send((ev, ctx)).unwrap();
     }
 }
+
+#[derive(Component)]
+struct RawEventReceiver(Arc<Mutex<Receiver<RawEvent>>>);
+
+impl From<Receiver<RawEvent>> for RawEventReceiver {
+    fn from(receiver: Receiver<RawEvent>) -> Self {
+        Self(Arc::new(Mutex::new(receiver)))
+    }
+}
+
+async fn start_client(
+    config: SerenityConfig,
+    sender: Sender<RawEvent>,
+) -> serenity::Result<serenity::Client> {
+    let client = ClientBuilder::new(&config.token, config.intents)
+        .raw_event_handler(SenderHandler(sender))
+        .await?;
+    Ok(client)
+}
+
+fn start(mut commands: Commands, clients: Query<(Entity, &SerenityConfig), Added<SerenityConfig>>) {
+    for (client, config) in &clients {
+        let (sender, receiver) = channel();
+        let fut = start_client(config.to_owned(), sender);
+        let boxed_fut: Pin<Box<dyn std::future::Future<Output = _>>> = Box::pin(fut);
+        let fut = Compat::new(boxed_fut);
+        let cell = OnceLock::new();
+        let _ = cell.set(fut);
+        commands
+            .entity(client)
+            .insert((Starting(cell), RawEventReceiver::from(receiver)));
+    }
+}
+
+fn poll_starting(mut commands: Commands, mut clients: Query<(Entity, &mut Starting)>) {
+    for (client, mut starting) in &mut clients {
+        let fut = starting.0.get_mut().unwrap();
+
+        let Some(res) = future::block_on(future::poll_once(fut)) else {
+            continue;
+        };
+        commands.entity(client).remove::<Starting>();
+        let c = match res {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to start client: {:?}", e);
+                continue;
+            }
+        };
+        commands
+            .entity(client)
+            .insert((Http(c.http.clone()), SerenityClient(c)));
+    }
+}
+
+fn write_events(
+    receivers: Query<(Entity, &RawEventReceiver)>,
+    mut writer: EventWriter<SerenityEvent>,
+) {
+    for (entity, receiver) in &mut receivers.iter() {
+        let receiver = receiver.0.lock().unwrap();
+        for (event, context) in receiver.try_iter() {
+            let ev = SerenityEvent {
+                entity,
+                event,
+                context,
+            };
+            writer.send(ev);
+        }
+    }
+}
+
+pub struct SerenityPlugin;
 
 impl bevy_app::Plugin for SerenityPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        app.add_event::<RawEvent>();
-        app.add_event::<Status>();
-
-        self.init_resources(&mut app.world);
-
-        app.add_system(event_handler);
-        app.add_system(status_handler);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bevy_app::{prelude::*, ScheduleRunnerPlugin};
-
-    fn mock_app() -> App {
-        let mut app = App::new();
-        app.add_plugin(ScheduleRunnerPlugin::default());
-        app
-    }
-
-    #[test]
-    fn inits_resources() {
-        let mut app = mock_app();
-        app.add_plugin(SerenityPlugin::new("token", GatewayIntents::all()));
-        app.update();
-
-        assert!(app.world.is_resource_added::<StatusSender>());
-        assert!(app.world.is_resource_added::<StatusReceiver>());
-        assert!(app.world.is_resource_added::<EventReceiver>());
+        app.add_event::<SerenityEvent>();
+        app.add_systems(bevy_app::Update, (start, poll_starting, write_events));
     }
 }
