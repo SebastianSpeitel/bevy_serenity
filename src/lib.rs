@@ -1,3 +1,4 @@
+#![allow(clippy::needless_pass_by_value)]
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -5,6 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use async_compat::Compat;
 use bevy_ecs::prelude::*;
+use bevy_utils::tracing::{error, info, trace};
 use futures_lite::future;
 pub use serenity;
 use serenity::{client::ClientBuilder, prelude::*};
@@ -54,10 +56,7 @@ struct SenderHandler(Sender<RawEvent>);
 #[serenity::async_trait]
 impl RawEventHandler for SenderHandler {
     async fn raw_event(&self, ctx: Context, ev: serenity::all::Event) {
-        log::trace!(
-            "Received raw event: {}",
-            ev.name().unwrap_or_else(|| "Unknown".to_owned())
-        );
+        trace!(message = "Received raw event", event = ?ev);
         self.0.send((ev, ctx)).unwrap();
     }
 }
@@ -83,7 +82,7 @@ async fn start_client(
 
 fn start(mut commands: Commands, clients: Query<(Entity, &SerenityConfig), Added<SerenityConfig>>) {
     for (client, config) in &clients {
-        log::info!("Starting client");
+        info!(message = "Starting client", ?config);
         let (sender, receiver) = channel();
         let fut = start_client(config.to_owned(), sender);
         let boxed_fut: Pin<Box<dyn std::future::Future<Output = _>>> = Box::pin(fut);
@@ -107,11 +106,11 @@ fn poll_starting(mut commands: Commands, mut clients: Query<(Entity, &mut Starti
         let mut c = match res {
             Ok(c) => c,
             Err(e) => {
-                log::error!("Failed to start client: {:?}", e);
+                error!(message = "Failed to start client", error = %e);
                 continue;
             }
         };
-        log::info!("Client started");
+        info!(message = "Client started");
         let client = SerenityClient(c.http.clone());
         let fut = async move {
             let _ = c.start().await;
