@@ -3,6 +3,11 @@ name = "bevy_serenity"
 version = "0.3.0"
 edition = "2021"
 
+[features]
+default = ["tls-rust"]
+tls-native = ["serenity/native_tls_backend"]
+tls-rust = ["serenity/rustls_backend"]
+
 [dependencies]
 bevy_app = "0.14"
 bevy_ecs = "0.14"
@@ -14,4 +19,4 @@ futures-lite = "2.2"
 [dependencies.serenity]
 version = "0.12"
 default-features = false
-features = ["client", "gateway", "model", "rustls_backend"]
+features = ["client", "gateway", "model"]
