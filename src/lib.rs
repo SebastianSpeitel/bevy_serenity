@@ -6,8 +6,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use async_compat::Compat;
 use bevy_ecs::prelude::*;
-use bevy_utils::tracing::{error, info, trace};
-use futures_lite::future;
+use bevy_utils::{
+    futures::check_ready,
+    tracing::{error, info, trace},
+};
 pub use serenity;
 use serenity::{client::ClientBuilder, prelude::*};
 
@@ -99,7 +101,7 @@ fn poll_starting(mut commands: Commands, mut clients: Query<(Entity, &mut Starti
     for (entity, mut starting) in &mut clients {
         let fut = starting.0.get_mut().unwrap();
 
-        let Some(res) = future::block_on(future::poll_once(fut)) else {
+        let Some(res) = check_ready(fut) else {
             continue;
         };
         commands.entity(entity).remove::<Starting>();
@@ -143,7 +145,7 @@ fn write_events(
 fn run(mut clients: Query<&mut Running>) {
     for mut running in &mut clients {
         let fut = running.0.get_mut().unwrap();
-        let _ = future::block_on(future::poll_once(fut));
+        check_ready(fut);
     }
 }
 
